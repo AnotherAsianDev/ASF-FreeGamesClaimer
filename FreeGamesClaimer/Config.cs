@@ -26,7 +26,22 @@ internal sealed class PluginConfig {
 	/// <summary>Hours before a command that was already run is run again.</summary>
 	public int RetryAfterHours { get; set; } = 12;
 
+	/// <summary>Telegram notification: bot token from @BotFather and your chat id. Leave empty to disable.</summary>
+	public string TelegramBotToken { get; set; } = "";
+
+	public string TelegramChatId { get; set; } = "";
+
+	/// <summary>Gotify notification: server address (e.g. https://gotify.example.com) and an application token. Leave empty to disable.</summary>
+	public string GotifyUrl { get; set; } = "";
+
+	public string GotifyToken { get; set; } = "";
+
 	internal void Normalize() {
+		TelegramBotToken = (TelegramBotToken ?? "").Trim();
+		TelegramChatId = (TelegramChatId ?? "").Trim();
+		GotifyUrl = (GotifyUrl ?? "").Trim();
+		GotifyToken = (GotifyToken ?? "").Trim();
+
 		CheckIntervalMinutes = Math.Clamp(CheckIntervalMinutes, 5, 24 * 60);
 		MaxPostAgeDays = Math.Clamp(MaxPostAgeDays, 1, 30);
 		DelayBetweenClaimsSeconds = Math.Clamp(DelayBetweenClaimsSeconds, 1, 120);

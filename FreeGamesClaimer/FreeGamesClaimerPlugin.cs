@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using ArchiSteamFarm.Core;
@@ -18,13 +19,14 @@ namespace FreeGamesClaimer;
 #pragma warning disable CA1001
 
 [UsedImplicitly]
-internal sealed class FreeGamesClaimerPlugin : IBotCommand2 {
+internal sealed partial class FreeGamesClaimerPlugin : IBotCommand2 {
 	private readonly SemaphoreSlim RunLock = new(1, 1);
 	private readonly CancellationTokenSource Shutdown = new();
 
 	private PluginConfig Config = new();
 	private ClaimHistory History = new();
 	private RedditFreeGames? Source;
+	private Notifier? Notifications;
 	private DateTime NextAutoCheck;
 
 	public string Name => "FreeGamesClaimer";
@@ -36,6 +38,7 @@ internal sealed class FreeGamesClaimerPlugin : IBotCommand2 {
 			Config = PluginStorage.LoadConfig();
 			History = PluginStorage.LoadHistory();
 			Source = new RedditFreeGames(Config.RedditUserUrl, Config.MaxPostAgeDays);
+			Notifications = new Notifier(Config);
 
 			if (Config.Enabled) {
 				NextAutoCheck = DateTime.Now.AddMinutes(2);
@@ -47,6 +50,10 @@ internal sealed class FreeGamesClaimerPlugin : IBotCommand2 {
 				_ = Task.Run(() => LoopAsync(token));
 			} else {
 				ASF.ArchiLogger.LogGenericInfo($"{Name} {Version} loaded. Automatic checks are disabled in config/freegames.json.config. Manual check: freegames");
+			}
+
+			if (Notifications.IsConfigured) {
+				ASF.ArchiLogger.LogGenericInfo($"{Name}: Notifications are on (Telegram and/or Gotify). Test them with: freegames test");
 			}
 		} catch (Exception e) {
 			// Never let the plugin take ASF down
@@ -63,6 +70,14 @@ internal sealed class FreeGamesClaimerPlugin : IBotCommand2 {
 
 		if (access < EAccess.Master) {
 			return null;
+		}
+
+		if ((args.Length > 1) && args[1].Equals("test", StringComparison.OrdinalIgnoreCase)) {
+			if ((Notifications == null) || !Notifications.IsConfigured) {
+				return "No notification is set up. Fill in TelegramBotToken + TelegramChatId and/or GotifyUrl + GotifyToken in config/freegames.json.config and restart ASF.";
+			}
+
+			return string.Join(Environment.NewLine, await Notifications.SendAsync(Name, "Test notification: this is how a claimed game will look.", Shutdown.Token).ConfigureAwait(false));
 		}
 
 		string? result = await RunOnceAsync(true, Shutdown.Token).ConfigureAwait(false);
@@ -161,6 +176,7 @@ internal sealed class FreeGamesClaimerPlugin : IBotCommand2 {
 			StringBuilder report = new();
 			int sent = 0;
 			int added = 0;
+			List<(string Type, string Id, string Bot)> claimed = [];
 
 			foreach (string command in todo) {
 				cancellationToken.ThrowIfCancellationRequested();
@@ -170,6 +186,10 @@ internal sealed class FreeGamesClaimerPlugin : IBotCommand2 {
 				string? response = await worker.Commands.Response(EAccess.Operator, command).ConfigureAwait(false);
 
 				if (!string.IsNullOrWhiteSpace(response)) {
+					foreach (Match ok in ClaimedRegex().Matches(response)) {
+						claimed.Add((ok.Groups["type"].Value, ok.Groups["id"].Value, ok.Groups["bot"].Value));
+					}
+
 					// One log line per bot. "<" and ">" are swapped for brackets: ASF's web log viewer swallows <BotName> as an HTML tag
 					foreach (string line in response.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
 						ASF.ArchiLogger.LogGenericInfo($"{Name}: {kind}: {command} -> {line.Replace('<', '[').Replace('>', ']')}");
@@ -197,6 +217,12 @@ internal sealed class FreeGamesClaimerPlugin : IBotCommand2 {
 
 			PluginStorage.SaveHistory(History);
 
+			if ((claimed.Count > 0) && (Notifications != null) && Notifications.IsConfigured) {
+				IReadOnlyCollection<string> sentTo = await Notifications.SendAsync($"{Name}: {claimed.Count} new license(s)", Notifier.BuildMessage(claimed), cancellationToken).ConfigureAwait(false);
+
+				ASF.ArchiLogger.LogGenericInfo($"{Name}: Notification: {string.Join(", ", sentTo)}");
+			}
+
 			string summary = $"{Name}: {kind} finished: ran {sent} command(s), {added} new license(s) added" + (added == 0 ? " (everything was already owned or not available)." : ".");
 
 			ASF.ArchiLogger.LogGenericInfo(summary);
@@ -206,6 +232,10 @@ internal sealed class FreeGamesClaimerPlugin : IBotCommand2 {
 			RunLock.Release();
 		}
 	}
+
+	// ASF answers "<Bot> ID: app/123 | Status: OK | Items: ..." for every license that was really added
+	[GeneratedRegex("""<(?<bot>[^>]+)> ID: (?<type>app|sub)/(?<id>\d+) \| Status: OK""", RegexOptions.CultureInvariant)]
+	private static partial Regex ClaimedRegex();
 }
 
 #pragma warning restore CA1001

@@ -20,6 +20,7 @@ Built against ASF 6.3.5.1 on .NET 10.
 
 - Every 30 minutes (first check 2 minutes after start) it reads the newest u/ASFinfo comments (max 3 days old) and runs each `addlicense ...` command found.
 - `freegames` (Master access) forces a check right now and runs everything again, ignoring the cooldown.
+- `freegames test` sends a test notification.
 - Commands already run are remembered in `config/freegames.history.json.config` and run again only after 12 h.
 
 ## Config: `config/freegames.json.config` (created on first start)
@@ -32,6 +33,19 @@ Built against ASF 6.3.5.1 on .NET 10.
 | `MaxPostAgeDays` | `3` | Ignore older comments |
 | `DelayBetweenClaimsSeconds` | `5` | Pause between commands (Steam allows ~50 activations/hour) |
 | `RetryAfterHours` | `12` | Cooldown before the same command is run again |
+| `TelegramBotToken` / `TelegramChatId` | empty | Telegram notification (bot token from @BotFather, your chat id). Both must be set. |
+| `GotifyUrl` / `GotifyToken` | empty | Gotify notification (e.g. `https://gotify.example.com` and an application token). Both must be set. |
+
+## Notifications
+
+With Telegram and/or Gotify filled in, you get one message per check in which a license was really added (`Status: OK`), for example:
+
+```
+FreeGamesClaimer: 1 new license(s)
+https://store.steampowered.com/app/4983490 (Alt, Main)
+```
+
+Games you already own, and checks with nothing new, send nothing. Restart ASF after editing the config, then run `freegames test` to send a test message. A failing notification only writes a warning to the ASF log and never stops the claiming.
 
 ## Build
 
