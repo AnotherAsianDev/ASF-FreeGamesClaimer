@@ -14,7 +14,7 @@ The Reddit account u/ASFinfo answers every free-game post with a ready-made comm
 2. Copy `FreeGamesClaimer.dll` into ASF's `plugins` folder (Docker: the mounted `plugins` directory).
 3. Restart ASF. The log should show `FreeGamesClaimer ... has been loaded successfully!`.
 
-Built against ASF 6.3.5.1 on .NET 10.
+Built against ASF 7.0.0.5 on .NET 11. For ASF 6.x use release v1.1.0 (a plugin built for one ASF major version does not load on the other).
 
 ## Use
 
@@ -49,15 +49,15 @@ Games you already own, and checks with nothing new, send nothing. Restart ASF af
 
 ## Build
 
-The plugin compiles against the ASF source, exactly like the official plugin template. Pin the ASF version to the one you run (check the tag, e.g. `6.3.5.1`).
+The plugin compiles against the ASF source, exactly like the official plugin template. Pin the ASF version to the one you run (check the tag, e.g. `7.0.0.5`).
 
 ```
 git init
 git submodule add https://github.com/JustArchiNET/ArchiSteamFarm.git ArchiSteamFarm
-git -C ArchiSteamFarm checkout 6.3.5.1
+git -C ArchiSteamFarm checkout 7.0.0.5
 dotnet publish FreeGamesClaimer -c Release -o out
 ```
 
 Copy `out/FreeGamesClaimer.dll` into ASF's `plugins` folder (or `plugins/FreeGamesClaimer/`), **remove the old ASFFreeGames dll**, restart ASF. The GitHub Actions workflow in `.github/workflows` does the same build for you if you push this to a repo (with the submodule committed).
 
-Requires .NET 10 SDK.
+Requires the .NET 11 SDK.

@@ -19,7 +19,7 @@ namespace FreeGamesClaimer;
 #pragma warning disable CA1001
 
 [UsedImplicitly]
-internal sealed partial class FreeGamesClaimerPlugin : IBotCommand2 {
+internal sealed partial class FreeGamesClaimerPlugin : IBotCommand {
 	private readonly SemaphoreSlim RunLock = new(1, 1);
 	private readonly CancellationTokenSource Shutdown = new();
 
@@ -33,7 +33,7 @@ internal sealed partial class FreeGamesClaimerPlugin : IBotCommand2 {
 
 	public Version Version => typeof(FreeGamesClaimerPlugin).Assembly.GetName().Version ?? throw new InvalidOperationException(nameof(Version));
 
-	public Task OnLoaded() {
+	public Task OnLoaded(CancellationToken cancellationToken = default) {
 		try {
 			Config = PluginStorage.LoadConfig();
 			History = PluginStorage.LoadHistory();
@@ -47,7 +47,7 @@ internal sealed partial class FreeGamesClaimerPlugin : IBotCommand2 {
 
 				CancellationToken token = Shutdown.Token;
 
-				_ = Task.Run(() => LoopAsync(token));
+				_ = Task.Run(() => LoopAsync(token), token);
 			} else {
 				ASF.ArchiLogger.LogGenericInfo($"{Name} {Version} loaded. Automatic checks are disabled in config/freegames.json.config. Manual check: freegames");
 			}
@@ -63,12 +63,12 @@ internal sealed partial class FreeGamesClaimerPlugin : IBotCommand2 {
 		return Task.CompletedTask;
 	}
 
-	public async Task<string?> OnBotCommand(Bot bot, EAccess access, string message, string[] args, ulong steamID = 0) {
+	public async Task<string?> OnBotCommand(Bot bot, EBotUserAccess access, string message, string[] args, ulong steamID = 0, CancellationToken cancellationToken = default) {
 		if ((args.Length == 0) || !args[0].Equals("freegames", StringComparison.OrdinalIgnoreCase)) {
 			return null;
 		}
 
-		if (access < EAccess.Master) {
+		if (access < EBotUserAccess.Master) {
 			return null;
 		}
 
@@ -183,7 +183,7 @@ internal sealed partial class FreeGamesClaimerPlugin : IBotCommand2 {
 
 				// The command exactly as ASFinfo posted it ("addlicense asf a/123"). ASF applies it to all bots.
 				// Commands.Response takes the bare command, without the "!" chat prefix.
-				string? response = await worker.Commands.Response(EAccess.Operator, command).ConfigureAwait(false);
+				string? response = await worker.Commands.Response(EBotUserAccess.Operator, command, 0, cancellationToken).ConfigureAwait(false);
 
 				if (!string.IsNullOrWhiteSpace(response)) {
 					foreach (Match ok in ClaimedRegex().Matches(response)) {
