@@ -2,11 +2,13 @@
 
 ArchiSteamFarm plugin that claims temporarily free Steam games on all your bots. Replacement for ASFFreeGames.
 
-**Why a rewrite:** ASFFreeGames stopped loading on ASF 6.3.x / .NET 10 (`Method not found: WebProxy..ctor(String, Boolean)`, issue #143). This plugin has no proxy code, so that crash cannot happen. It sends one request to Reddit per check and none to Steam.
+**Why a rewrite:** ASFFreeGames stopped loading on ASF 6.3.x / .NET 10 (`Method not found: WebProxy..ctor(String, Boolean)`, issue #143). This plugin has no proxy code, so that crash cannot happen. It sends one request to Reddit per check, plus one small public store request per new game (see below).
 
 ## How it works
 
-The Reddit account u/ASFinfo answers every free-game post with a ready-made command, e.g. `!addlicense asf a/4983490`. The plugin takes exactly that command from the comment, removes the `!` chat prefix and runs it in ASF. Because the command says `asf`, ASF applies it to all bots. Comments that ASFinfo marks with "This game is currently free to play." are skipped by default, so only limited-time promotions are claimed (see `ClaimFreeToPlay`).
+The Reddit account u/ASFinfo answers every free-game post with a ready-made command, e.g. `!addlicense asf a/4983490`. The plugin takes exactly that command from the comment, removes the `!` chat prefix and runs it in ASF. Because the command says `asf`, ASF applies it to all bots.
+
+**Only paid games that are free right now:** before a command runs, the plugin asks Steam's public store API about the game. It is claimed only if it normally costs money and is currently 100% off. Free-to-play games, games with a smaller discount and games without a price are skipped. Limited-time packages (`s/ID`) are usually not listed by the store API, so they are claimed without that check. If Steam can't be asked (network, rate limit), the game is retried at the next check. A skipped game is not asked again for 2 hours, a manual `freegames` asks again right away.
 
 ## Install (prebuilt DLL)
 
@@ -18,7 +20,7 @@ Built against ASF 7.0.0.5 on .NET 11. For ASF 6.x use release v1.1.0 (a plugin b
 
 ## Use
 
-- Every 30 minutes (first check 2 minutes after start) it reads the newest u/ASFinfo comments (max 3 days old) and runs each `addlicense ...` command found.
+- Every 30 minutes (first check 2 minutes after start) it reads the newest u/ASFinfo comments (max 3 days old), checks each game on Steam and runs the `addlicense ...` commands for paid games that are 100% off.
 - `freegames` (Master access) forces a check right now and runs everything again, ignoring the cooldown.
 - `freegames test` sends a test notification.
 - Commands already run are remembered in `config/freegames.history.json.config` and run again only after 12 h.
@@ -31,7 +33,6 @@ Built against ASF 7.0.0.5 on .NET 11. For ASF 6.x use release v1.1.0 (a plugin b
 | `CheckIntervalMinutes` | `30` | 5 to 1440 |
 | `RedditUserUrl` | `https://www.reddit.com/user/ASFinfo` | Reddit account to read |
 | `MaxPostAgeDays` | `3` | Ignore older comments |
-| `ClaimFreeToPlay` | `false` | `false`: only limited-time promotions (games that normally cost money) are claimed. `true`: also games that are free to play permanently. |
 | `DelayBetweenClaimsSeconds` | `5` | Pause between commands (Steam allows ~50 activations/hour) |
 | `RetryAfterHours` | `12` | Cooldown before the same command is run again |
 | `TelegramBotToken` / `TelegramChatId` | empty | Telegram notification (bot token from @BotFather, your chat id). Both must be set. |

@@ -23,16 +23,13 @@ internal sealed partial class RedditFreeGames : IDisposable {
 	private readonly HttpClient Http;
 	private readonly string BaseUrl;
 	private readonly int MaxAgeDays;
-	private readonly bool IncludeFreeToPlay;
 
 	private IReadOnlyCollection<string>? Cached;
-	private int CachedSkipped;
 	private DateTime CachedAt;
 
-	internal RedditFreeGames(string userUrl, int maxAgeDays, bool includeFreeToPlay) {
+	internal RedditFreeGames(string userUrl, int maxAgeDays) {
 		BaseUrl = userUrl.TrimEnd('/');
 		MaxAgeDays = maxAgeDays;
-		IncludeFreeToPlay = includeFreeToPlay;
 
 		// Plain SocketsHttpHandler: honours the system/env proxy by itself, no custom proxy code
 		// (a WebProxy constructor call is exactly what broke the previous plugin on .NET 10).
@@ -52,10 +49,10 @@ internal sealed partial class RedditFreeGames : IDisposable {
 	public void Dispose() => Http.Dispose();
 
 	/// <summary>Never throws for network/parse problems. Error is set only when Reddit could not be read at all.</summary>
-	internal async Task<(IReadOnlyCollection<string> Commands, int SkippedFreeToPlay, string? Error)> FetchAsync(CancellationToken cancellationToken) {
+	internal async Task<(IReadOnlyCollection<string> Commands, string? Error)> FetchAsync(CancellationToken cancellationToken) {
 		// Reddit throttles unauthenticated clients hard: repeated manual runs reuse the last answer for a few minutes
 		if ((Cached != null) && ((DateTime.UtcNow - CachedAt) < CacheDuration)) {
-			return (Cached, CachedSkipped, null);
+			return (Cached, null);
 		}
 
 		string rssError;
@@ -64,10 +61,10 @@ internal sealed partial class RedditFreeGames : IDisposable {
 		try {
 			string rss = await Http.GetStringAsync(new Uri($"{BaseUrl}/comments.rss?limit=25"), cancellationToken).ConfigureAwait(false);
 
-			return Remember(ParseFeed(rss, DateTimeOffset.UtcNow, MaxAgeDays, IncludeFreeToPlay));
+			return Remember(ParseFeed(rss, DateTimeOffset.UtcNow, MaxAgeDays));
 		} catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.TooManyRequests) {
 			// Asking again through the JSON endpoint would only make the throttling worse
-			return ([], 0, "Reddit is rate limiting this connection (HTTP 429), try again in a few minutes");
+			return ([], "Reddit is rate limiting this connection (HTTP 429), try again in a few minutes");
 		} catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested) {
 			rssError = e.Message;
 		}
@@ -75,27 +72,26 @@ internal sealed partial class RedditFreeGames : IDisposable {
 		try {
 			string json = await Http.GetStringAsync(new Uri($"{BaseUrl}/comments.json?limit=25&raw_json=1"), cancellationToken).ConfigureAwait(false);
 
-			return Remember(ParseJson(json, DateTimeOffset.UtcNow, MaxAgeDays, IncludeFreeToPlay));
+			return Remember(ParseJson(json, DateTimeOffset.UtcNow, MaxAgeDays));
 		} catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested) {
-			return ([], 0, $"reddit rss: {rssError}; reddit json: {e.Message}");
+			return ([], $"reddit rss: {rssError}; reddit json: {e.Message}");
 		}
 	}
 
-	private (IReadOnlyCollection<string> Commands, int SkippedFreeToPlay, string? Error) Remember((List<string> Commands, int Skipped) result) {
-		Cached = result.Commands;
-		CachedSkipped = result.Skipped;
+	private (IReadOnlyCollection<string> Commands, string? Error) Remember(List<string> commands) {
+		Cached = commands;
 		CachedAt = DateTime.UtcNow;
 
-		return (result.Commands, result.Skipped, null);
+		return (commands, null);
 	}
 
 	/// <summary>Parses the Atom feed (.../comments.rss), keeping entries newer than maxAgeDays.</summary>
-	internal static (List<string> Commands, int Skipped) ParseFeed(string feed, DateTimeOffset now, int maxAgeDays, bool includeFreeToPlay) {
+	internal static List<string> ParseFeed(string feed, DateTimeOffset now, int maxAgeDays) {
 		if (!feed.Contains("<feed", StringComparison.Ordinal) && !feed.Contains("<rss", StringComparison.Ordinal)) {
 			throw new InvalidOperationException("unexpected response (not a feed)");
 		}
 
-		List<string> comments = [];
+		StringBuilder text = new();
 
 		foreach (Match entry in EntryRegex().Matches(feed)) {
 			Match updated = UpdatedRegex().Match(entry.Value);
@@ -113,15 +109,15 @@ internal sealed partial class RedditFreeGames : IDisposable {
 			// The comment is HTML-escaped inside the XML: unescape it and drop the tags to get plain text
 			string plain = TagRegex().Replace(WebUtility.HtmlDecode(content.Groups[1].Value), " ");
 
-			comments.Add(WebUtility.HtmlDecode(plain));
+			text.Append(WebUtility.HtmlDecode(plain)).Append('\n');
 		}
 
-		return Extract(comments, includeFreeToPlay);
+		return ParseText(text.ToString());
 	}
 
 	/// <summary>Parses the listing returned by .../comments.json, keeping comments newer than maxAgeDays.</summary>
-	internal static (List<string> Commands, int Skipped) ParseJson(string json, DateTimeOffset now, int maxAgeDays, bool includeFreeToPlay) {
-		List<string> comments = [];
+	internal static List<string> ParseJson(string json, DateTimeOffset now, int maxAgeDays) {
+		StringBuilder text = new();
 
 		using JsonDocument doc = JsonDocument.Parse(json);
 
@@ -139,35 +135,11 @@ internal sealed partial class RedditFreeGames : IDisposable {
 			}
 
 			if (post.TryGetProperty("body", out JsonElement body) && (body.ValueKind == JsonValueKind.String)) {
-				comments.Add(body.GetString() ?? "");
+				text.Append(body.GetString()).Append('\n');
 			}
 		}
 
-		return Extract(comments, includeFreeToPlay);
-	}
-
-	/// <summary>
-	/// ASFinfo adds "This game is currently free to play." to its comment for games that are free permanently.
-	/// Those are skipped unless includeFreeToPlay is set, so only real limited-time promotions stay.
-	/// A command that also appears in a comment without that label is kept.
-	/// </summary>
-	internal static (List<string> Commands, int Skipped) Extract(IEnumerable<string> comments, bool includeFreeToPlay) {
-		Dictionary<string, string> kept = new(StringComparer.OrdinalIgnoreCase);
-		HashSet<string> freeToPlay = new(StringComparer.OrdinalIgnoreCase);
-
-		foreach (string comment in comments) {
-			bool isFreeToPlay = !includeFreeToPlay && FreeToPlayRegex().IsMatch(comment);
-
-			foreach (string command in ParseText(comment)) {
-				if (isFreeToPlay) {
-					freeToPlay.Add(command);
-				} else {
-					kept.TryAdd(command, command);
-				}
-			}
-		}
-
-		return (kept.Values.ToList(), freeToPlay.Count(x => !kept.ContainsKey(x)));
+		return ParseText(text.ToString());
 	}
 
 	/// <summary>
@@ -189,9 +161,6 @@ internal sealed partial class RedditFreeGames : IDisposable {
 	// "addlicense asf a/123" or "addlicense a/123,s/456" - ends at the first thing that isn't a license token
 	[GeneratedRegex("""addlicense\s+(?:asf\s+)?(?:(?:app|sub|a|s)/\d+(?:\s*,\s*)?)+""", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
 	private static partial Regex CommandRegex();
-
-	[GeneratedRegex("""free\s+to\s+play""", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-	private static partial Regex FreeToPlayRegex();
 
 	[GeneratedRegex("""\s+""", RegexOptions.CultureInvariant)]
 	private static partial Regex WhitespaceRegex();

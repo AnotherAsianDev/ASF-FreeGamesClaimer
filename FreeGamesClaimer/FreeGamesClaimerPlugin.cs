@@ -20,6 +20,8 @@ namespace FreeGamesClaimer;
 
 [UsedImplicitly]
 internal sealed partial class FreeGamesClaimerPlugin : IBotCommand {
+	private static readonly TimeSpan RejectedCooldown = TimeSpan.FromHours(2);
+
 	private readonly SemaphoreSlim RunLock = new(1, 1);
 	private readonly CancellationTokenSource Shutdown = new();
 
@@ -27,6 +29,8 @@ internal sealed partial class FreeGamesClaimerPlugin : IBotCommand {
 	private ClaimHistory History = new();
 	private RedditFreeGames? Source;
 	private Notifier? Notifications;
+	private SteamStore? Store;
+	private readonly Dictionary<string, DateTime> Rejected = new(StringComparer.OrdinalIgnoreCase);
 	private DateTime NextAutoCheck;
 
 	public string Name => "FreeGamesClaimer";
@@ -37,8 +41,9 @@ internal sealed partial class FreeGamesClaimerPlugin : IBotCommand {
 		try {
 			Config = PluginStorage.LoadConfig();
 			History = PluginStorage.LoadHistory();
-			Source = new RedditFreeGames(Config.RedditUserUrl, Config.MaxPostAgeDays, Config.ClaimFreeToPlay);
+			Source = new RedditFreeGames(Config.RedditUserUrl, Config.MaxPostAgeDays);
 			Notifications = new Notifier(Config);
+			Store = new SteamStore();
 
 			if (Config.Enabled) {
 				NextAutoCheck = DateTime.Now.AddMinutes(2);
@@ -124,7 +129,7 @@ internal sealed partial class FreeGamesClaimerPlugin : IBotCommand {
 	private async Task<string?> RunOnceAsync(bool force, CancellationToken cancellationToken) {
 		string kind = force ? "Manual check" : "Automatic check";
 
-		if (Source == null) {
+		if ((Source == null) || (Store == null)) {
 			return $"{Name} is not initialised.";
 		}
 
@@ -141,7 +146,7 @@ internal sealed partial class FreeGamesClaimerPlugin : IBotCommand {
 				return force ? "No bot is connected right now." : null;
 			}
 
-			(IReadOnlyCollection<string> commands, int skippedFreeToPlay, string? error) = await Source.FetchAsync(cancellationToken).ConfigureAwait(false);
+			(IReadOnlyCollection<string> commands, string? error) = await Source.FetchAsync(cancellationToken).ConfigureAwait(false);
 
 			if (error != null) {
 				ASF.ArchiLogger.LogGenericWarning($"{Name}: {kind} failed, could not read Reddit ({error})");
@@ -161,29 +166,76 @@ internal sealed partial class FreeGamesClaimerPlugin : IBotCommand {
 			List<string> todo = commands.Where(x => force || !History.Attempted.TryGetValue(x, out DateTime last) || ((now - last) >= cooldown)).ToList();
 			int skipped = commands.Count - todo.Count;
 
-			string found = $"{commands.Count} {(Config.ClaimFreeToPlay ? "" : "limited-time ")}command(s) on Reddit from the last {Config.MaxPostAgeDays} day(s)" + (skippedFreeToPlay > 0 ? $" ({skippedFreeToPlay} free-to-play game(s) skipped)" : "");
+			string found = $"{commands.Count} command(s) on Reddit from the last {Config.MaxPostAgeDays} day(s)";
 
 			if (todo.Count == 0) {
-				string nothing = commands.Count == 0 ? $"{Name}: {kind}: {found}, nothing to claim." : $"{Name}: {kind}: {found}, all already run in the last {Config.RetryAfterHours} h, nothing to do.";
+				string nothing = $"{Name}: {kind}: {found}, all already run in the last {Config.RetryAfterHours} h, nothing to do.";
 
 				ASF.ArchiLogger.LogGenericInfo(nothing);
 
 				return force ? nothing : null;
 			}
 
-			ASF.ArchiLogger.LogGenericInfo($"{Name}: {kind} started: {found}, running {todo.Count}" + (skipped > 0 ? $", skipping {skipped} (already run in the last {Config.RetryAfterHours} h)." : "."));
+			ASF.ArchiLogger.LogGenericInfo($"{Name}: {kind} started: {found}, checking {todo.Count} on Steam" + (skipped > 0 ? $", skipping {skipped} (already run in the last {Config.RetryAfterHours} h)." : "."));
+
+			// Only paid games that are 100% off right now get claimed. Steam decides, not the Reddit comment.
+			List<(string Command, string ToRun)> approved = [];
+			int notFree = 0;
+			int failed = 0;
+			bool askedSteam = false;
+
+			foreach (string command in todo) {
+				cancellationToken.ThrowIfCancellationRequested();
+
+				if (!force && Rejected.TryGetValue(command, out DateTime rejectedAt) && ((now - rejectedAt) < RejectedCooldown)) {
+					notFree++;
+
+					continue;
+				}
+
+				if (askedSteam) {
+					await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+				}
+
+				askedSteam = true;
+
+				(string? toRun, string note, bool couldNotAsk) = await Store.ClassifyAsync(command, cancellationToken).ConfigureAwait(false);
+
+				if (couldNotAsk) {
+					failed++;
+
+					ASF.ArchiLogger.LogGenericWarning($"{Name}: {kind}: {command} -> {note}");
+				} else if (toRun == null) {
+					notFree++;
+					Rejected[command] = now;
+
+					ASF.ArchiLogger.LogGenericInfo($"{Name}: {kind}: {command} -> skipped, {note}");
+				} else {
+					approved.Add((command, toRun));
+
+					ASF.ArchiLogger.LogGenericInfo($"{Name}: {kind}: {command} -> {note}");
+				}
+			}
+
+			if (approved.Count == 0) {
+				string none = $"{Name}: {kind} finished: nothing to claim, no paid game at 100% off right now ({notFree} skipped" + (failed > 0 ? $", {failed} could not be checked, retry next time" : "") + ").";
+
+				ASF.ArchiLogger.LogGenericInfo(none);
+
+				return force ? none : null;
+			}
 
 			StringBuilder report = new();
 			int sent = 0;
 			int added = 0;
 			List<(string Type, string Id, string Bot)> claimed = [];
 
-			foreach (string command in todo) {
+			foreach ((string command, string toRun) in approved) {
 				cancellationToken.ThrowIfCancellationRequested();
 
 				// The command exactly as ASFinfo posted it ("addlicense asf a/123"). ASF applies it to all bots.
 				// Commands.Response takes the bare command, without the "!" chat prefix.
-				string? response = await worker.Commands.Response(EBotUserAccess.Operator, command, 0, cancellationToken).ConfigureAwait(false);
+				string? response = await worker.Commands.Response(EBotUserAccess.Operator, toRun, 0, cancellationToken).ConfigureAwait(false);
 
 				if (!string.IsNullOrWhiteSpace(response)) {
 					foreach (Match ok in ClaimedRegex().Matches(response)) {
@@ -223,7 +275,7 @@ internal sealed partial class FreeGamesClaimerPlugin : IBotCommand {
 				ASF.ArchiLogger.LogGenericInfo($"{Name}: Notification: {string.Join(", ", sentTo)}");
 			}
 
-			string summary = $"{Name}: {kind} finished: ran {sent} command(s), {added} new license(s) added" + (added == 0 ? " (everything was already owned or not available)." : ".");
+			string summary = $"{Name}: {kind} finished: ran {sent} command(s), {added} new license(s) added" + (added == 0 ? " (everything was already owned or not available)" : "") + (notFree > 0 ? $", {notFree} skipped (not a paid game at 100% off)" : "") + (failed > 0 ? $", {failed} could not be checked, retry next time." : ".");
 
 			ASF.ArchiLogger.LogGenericInfo(summary);
 
