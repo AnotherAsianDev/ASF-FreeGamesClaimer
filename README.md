@@ -6,7 +6,7 @@ ArchiSteamFarm plugin that claims temporarily free Steam games on all your bots.
 
 ## How it works
 
-The Reddit account u/ASFinfo answers every free-game post with a ready-made command, e.g. `!addlicense asf a/4983490`. The plugin takes exactly that command from the comment, removes the `!` chat prefix and runs it in ASF. Because the command says `asf`, ASF applies it to all bots. Nothing else is done.
+The Reddit account u/ASFinfo answers every free-game post with a ready-made command, e.g. `!addlicense asf a/4983490`. The plugin takes exactly that command from the comment, removes the `!` chat prefix and runs it in ASF. Because the command says `asf`, ASF applies it to all bots. Comments that ASFinfo marks with "This game is currently free to play." are skipped by default, so only limited-time promotions are claimed (see `ClaimFreeToPlay`).
 
 ## Install (prebuilt DLL)
 
@@ -31,6 +31,7 @@ Built against ASF 7.0.0.5 on .NET 11. For ASF 6.x use release v1.1.0 (a plugin b
 | `CheckIntervalMinutes` | `30` | 5 to 1440 |
 | `RedditUserUrl` | `https://www.reddit.com/user/ASFinfo` | Reddit account to read |
 | `MaxPostAgeDays` | `3` | Ignore older comments |
+| `ClaimFreeToPlay` | `false` | `false`: only limited-time promotions (games that normally cost money) are claimed. `true`: also games that are free to play permanently. |
 | `DelayBetweenClaimsSeconds` | `5` | Pause between commands (Steam allows ~50 activations/hour) |
 | `RetryAfterHours` | `12` | Cooldown before the same command is run again |
 | `TelegramBotToken` / `TelegramChatId` | empty | Telegram notification (bot token from @BotFather, your chat id). Both must be set. |

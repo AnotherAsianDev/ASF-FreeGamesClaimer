@@ -37,7 +37,7 @@ internal sealed partial class FreeGamesClaimerPlugin : IBotCommand {
 		try {
 			Config = PluginStorage.LoadConfig();
 			History = PluginStorage.LoadHistory();
-			Source = new RedditFreeGames(Config.RedditUserUrl, Config.MaxPostAgeDays);
+			Source = new RedditFreeGames(Config.RedditUserUrl, Config.MaxPostAgeDays, Config.ClaimFreeToPlay);
 			Notifications = new Notifier(Config);
 
 			if (Config.Enabled) {
@@ -141,7 +141,7 @@ internal sealed partial class FreeGamesClaimerPlugin : IBotCommand {
 				return force ? "No bot is connected right now." : null;
 			}
 
-			(IReadOnlyCollection<string> commands, string? error) = await Source.FetchAsync(cancellationToken).ConfigureAwait(false);
+			(IReadOnlyCollection<string> commands, int skippedFreeToPlay, string? error) = await Source.FetchAsync(cancellationToken).ConfigureAwait(false);
 
 			if (error != null) {
 				ASF.ArchiLogger.LogGenericWarning($"{Name}: {kind} failed, could not read Reddit ({error})");
@@ -161,10 +161,10 @@ internal sealed partial class FreeGamesClaimerPlugin : IBotCommand {
 			List<string> todo = commands.Where(x => force || !History.Attempted.TryGetValue(x, out DateTime last) || ((now - last) >= cooldown)).ToList();
 			int skipped = commands.Count - todo.Count;
 
-			string found = $"{commands.Count} command(s) on Reddit from the last {Config.MaxPostAgeDays} day(s)";
+			string found = $"{commands.Count} {(Config.ClaimFreeToPlay ? "" : "limited-time ")}command(s) on Reddit from the last {Config.MaxPostAgeDays} day(s)" + (skippedFreeToPlay > 0 ? $" ({skippedFreeToPlay} free-to-play game(s) skipped)" : "");
 
 			if (todo.Count == 0) {
-				string nothing = $"{Name}: {kind}: {found}, all already run in the last {Config.RetryAfterHours} h, nothing to do.";
+				string nothing = commands.Count == 0 ? $"{Name}: {kind}: {found}, nothing to claim." : $"{Name}: {kind}: {found}, all already run in the last {Config.RetryAfterHours} h, nothing to do.";
 
 				ASF.ArchiLogger.LogGenericInfo(nothing);
 

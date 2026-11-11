@@ -20,6 +20,9 @@ internal sealed class PluginConfig {
 	/// <summary>Ignore Reddit comments older than this many days (the promotions are over by then).</summary>
 	public int MaxPostAgeDays { get; set; } = 3;
 
+	/// <summary>Also run commands for games that are free to play permanently. Off: only limited-time promotions (games that normally cost money) are claimed.</summary>
+	public bool ClaimFreeToPlay { get; set; }
+
 	/// <summary>Seconds to wait between two commands (Steam allows roughly 50 activations per hour).</summary>
 	public int DelayBetweenClaimsSeconds { get; set; } = 5;
 
